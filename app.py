@@ -5,7 +5,6 @@ Interactive dashboard for end-users to:
   1. Input alloy composition + stress
   2. View predicted survival curve
   3. Read reliability statement
-  4. Explore probabilistic S-N band
 """
 
 import sys
@@ -196,106 +195,80 @@ if run_btn or True:  # auto-run on load for demo
         with st.spinner("Computing survival probabilities…"):
             sf = predict_survival(rsf_model, feature_row, log_times)
 
+        # ── UTS guard — if stress >= UTS, material fails immediately ────────
+        if stress >= uts:
+            st.error(
+                f"⚠️ **Applied stress ({stress} MPa) ≥ UTS ({uts} MPa).** "
+                "The material fails immediately — survival probability is **0%** at all cycle counts.",
+                icon="🚨",
+            )
+            sf = np.zeros_like(sf)
+
         # ── Metrics ─────────────────────────────────────────────────────────
         prob_1e5 = float(np.interp(5.0, log_times, sf))   # log10(1e5) = 5
         prob_1e6 = float(np.interp(6.0, log_times, sf))   # log10(1e6) = 6
         prob_1e7 = float(np.interp(7.0, log_times, sf))   # log10(1e7) = 7
 
-        # Median life = where S crosses 0.5
+        # Median life = where S crosses 0.5 (undefined when sf is all zeros)
         median_idx = np.searchsorted(-sf, -0.50)
         median_log = log_times[min(median_idx, len(log_times) - 1)]
         median_life = 10.0 ** median_log
+        median_life_str = "< 10³" if stress >= uts else f"{median_life:.2e}"
 
         col1, col2, col3, col4 = st.columns(4)
         col1.metric("S(10⁵ cycles)", f"{prob_1e5*100:.1f}%")
         col2.metric("S(10⁶ cycles)", f"{prob_1e6*100:.1f}%")
         col3.metric("S(10⁷ cycles)", f"{prob_1e7*100:.1f}%")
-        col4.metric("Median Life (N₅₀)", f"{median_life:.2e}")
+        col4.metric("Median Life (N₅₀)", median_life_str)
 
         # ── Reliability statement ────────────────────────────────────────────
         pct_at_stress = int(prob_1e6 * 100)
-        st.markdown(f"""
-        <div class='reliability-box'>
-        📊 <b>Reliability Statement:</b><br>
-        At <b>{stress} MPa</b> stress amplitude, a <b>{material_type}</b> alloy ({composition})
-        has a <b>{pct_at_stress}%</b> probability of surviving 10⁶ cycles.
-        The predicted median fatigue life is <b>{median_life:.2e}</b> cycles.
-        </div>
-        """, unsafe_allow_html=True)
+        if stress < uts:
+            st.markdown(f"""
+            <div class='reliability-box'>
+            📊 <b>Reliability Statement:</b><br>
+            At <b>{stress} MPa</b> stress amplitude, a <b>{material_type}</b> alloy ({composition})
+            has a <b>{pct_at_stress}%</b> probability of surviving 10⁶ cycles.
+            The predicted median fatigue life is <b>{median_life:.2e}</b> cycles.
+            </div>
+            """, unsafe_allow_html=True)
+        else:
+            st.markdown(f"""
+            <div class='reliability-box'>
+            📊 <b>Reliability Statement:</b><br>
+            At <b>{stress} MPa</b> stress amplitude — which exceeds the UTS of <b>{uts} MPa</b> —
+            the <b>{material_type}</b> alloy ({composition}) has a <b>0%</b> survival probability
+            at any cycle count. Reduce the applied stress below UTS.
+            </div>
+            """, unsafe_allow_html=True)
 
         # ── Survival curve plot ──────────────────────────────────────────────
-        tab1, tab2 = st.tabs(["📈 Survival Curve S(N)", "📉 Probabilistic S-N Curve"])
-
-        with tab1:
-            fig_sf = go.Figure()
-            fig_sf.add_trace(go.Scatter(
-                x=raw_times, y=sf * 100,
-                mode="lines",
-                name="S(N)",
-                line=dict(color="#00b4d8", width=3),
-                fill="tozeroy",
-                fillcolor="rgba(0,180,216,0.1)",
-            ))
+        st.subheader("📈 Survival Curve S(N)")
+        fig_sf = go.Figure()
+        fig_sf.add_trace(go.Scatter(
+            x=raw_times, y=sf * 100,
+            mode="lines",
+            name="S(N)",
+            line=dict(color="#00b4d8", width=3),
+            fill="tozeroy",
+            fillcolor="rgba(0,180,216,0.1)",
+        ))
+        if stress < uts:
             fig_sf.add_vline(
                 x=median_life, line_dash="dash", line_color="#f77f00",
                 annotation_text=f"N₅₀ = {median_life:.1e}", annotation_position="top right",
             )
             fig_sf.add_hline(y=50, line_dash="dot", line_color="#fcbf49", line_width=1)
 
-            fig_sf.update_layout(
-                title=f"Survival Probability — {material_type} @ {stress} MPa",
-                xaxis=dict(title="Cycles to Failure (N)", type="log"),
-                yaxis=dict(title="Survival Probability S(N) (%)", range=[0, 105]),
-                template="plotly_dark",
-                height=420,
-                font=dict(family="Inter"),
-            )
-            st.plotly_chart(fig_sf, use_container_width=True)
-
-        with tab2:
-            stress_range = np.linspace(max(50, stress - 200), min(1000, stress + 300), 20)
-            n10, n50, n90 = [], [], []
-
-            with st.spinner("Computing S-N bands…"):
-                for s_pt in stress_range:
-                    _row = {**feature_row, "stress_amplitude": float(s_pt)}
-                    _sf  = predict_survival(rsf_model, _row, log_times)
-                    # Capture _sf by default arg to avoid closure capture bug
-                    def _at_p(p, __sf=_sf):
-                        idx = np.searchsorted(-__sf, -p)
-                        return 10.0 ** log_times[min(idx, len(log_times) - 1)]
-                    n10.append(_at_p(0.10))
-                    n50.append(_at_p(0.50))
-                    n90.append(_at_p(0.90))
-
-            fig_sn = go.Figure()
-            fig_sn.add_trace(go.Scatter(
-                x=n10 + n90[::-1],
-                y=list(stress_range) + list(stress_range[::-1]),
-                fill="toself", fillcolor="rgba(252,191,73,0.12)",
-                line=dict(color="rgba(0,0,0,0)"), name="10%–90% band",
-            ))
-            fig_sn.add_trace(go.Scatter(x=n90, y=stress_range, mode="lines",
-                name="90% survival", line=dict(color="#2ec4b6", dash="dash", width=2)))
-            fig_sn.add_trace(go.Scatter(x=n50, y=stress_range, mode="lines+markers",
-                name="50% survival (median)", line=dict(color="#fcbf49", width=2.5)))
-            fig_sn.add_trace(go.Scatter(x=n10, y=stress_range, mode="lines",
-                name="10% survival", line=dict(color="#ef233c", dash="dot", width=2)))
-
-            # Mark current stress point
-            fig_sn.add_hline(y=stress, line_dash="dash", line_color="white", line_width=1,
-                annotation_text="Current stress", annotation_position="right")
-
-            fig_sn.update_layout(
-                title=f"Probabilistic S-N Curve — {material_type}",
-                xaxis=dict(title="Cycles to Failure (N)", type="log"),
-                yaxis=dict(title="Stress Amplitude σₐ (MPa)"),
-                template="plotly_dark",
-                height=420,
-                legend=dict(orientation="h", y=-0.2),
-                font=dict(family="Inter"),
-            )
-            st.plotly_chart(fig_sn, use_container_width=True)
+        fig_sf.update_layout(
+            title=f"Survival Probability — {material_type} @ {stress} MPa",
+            xaxis=dict(title="Cycles to Failure (N)", type="log"),
+            yaxis=dict(title="Survival Probability S(N) (%)", range=[0, 105]),
+            template="plotly_dark",
+            height=420,
+            font=dict(family="Inter"),
+        )
+        st.plotly_chart(fig_sf, use_container_width=True)
 
 
 # ─── Footer ───────────────────────────────────────────────────────────────────

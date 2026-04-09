@@ -22,4 +22,4 @@ success: False
 ",,,,,,,
 Cox PH,delta contains nan value(s). Convergence halted. Please see the following tips in the lifelines documentation: https://lifelines.readthedocs.io/en/latest/Examples.html#problems-with-convergence-in-the-cox-proportional-hazard-model,,,,,,,
 Random Survival Forest,OK,0.7624472377043445,0.7704782503251819,0.013590296265222743,,,,
-,,,,,Random Survival Forest,0.7624,0.4746,297.0
+,,,,,Random Survival Forest,0.7624,0.1223,297.0
